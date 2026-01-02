@@ -1,6 +1,6 @@
 // vercel.json
 {
   "rewrites": [
-    { "source": "/bypass", "destination": "/api/bypass" }
+    { "source": "/bypass", "destination": "/api/bypass.py" }
   ]
 }
