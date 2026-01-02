@@ -9,10 +9,11 @@ app = Flask(__name__)
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "application/json",
+    "Accept": "application/json, text/plain, */*",
     "Accept-Language": "en-US,en;q=0.9",
     "Referer": "https://linkvertise.com/",
-    "Origin": "https://linkvertise.com"
+    "Origin": "https://linkvertise.com",
+    "X-Requested-With": "XMLHttpRequest"
 }
 
 def extract_link_id(obj):
@@ -26,6 +27,8 @@ def extract_link_id(obj):
                 return link.get("id")
             if isinstance(link, list) and len(link) > 0 and isinstance(link[0], dict) and "id" in link[0]:
                 return link[0].get("id")
+            if "linkId" in d and isinstance(d.get("linkId"), (str, int)):
+                return d.get("linkId")
         if isinstance(d, list):
             for item in d:
                 if isinstance(item, dict):
@@ -34,6 +37,12 @@ def extract_link_id(obj):
                         return link.get("id")
                     if isinstance(link, list) and len(link) > 0 and isinstance(link[0], dict) and "id" in link[0]:
                         return link[0].get("id")
+    if isinstance(obj, list) and len(obj) > 0:
+        for item in obj:
+            if isinstance(item, dict):
+                found = extract_link_id(item)
+                if found:
+                    return found
     return None
 
 def extract_target(obj):
@@ -48,6 +57,8 @@ def extract_target(obj):
             if isinstance(t, dict):
                 if "url" in t and isinstance(t["url"], str):
                     return t["url"]
+                if "target" in t and isinstance(t["target"], str):
+                    return t["target"]
             if isinstance(t, list) and len(t) > 0:
                 first = t[0]
                 if isinstance(first, str):
@@ -66,7 +77,24 @@ def extract_target(obj):
                         return t[0]
                     if isinstance(t, dict) and "url" in t and isinstance(t["url"], str):
                         return t["url"]
+    if isinstance(obj, list) and len(obj) > 0:
+        for item in obj:
+            found = extract_target(item)
+            if found:
+                return found
     return None
+
+def stimulate_linkvertise(path):
+    urls = [
+        f"https://publisher.linkvertise.com/api/v1/redirect/link/{path}/countdown_impression?trafficOrigin=network",
+        f"https://publisher.linkvertise.com/api/v1/redirect/link/{path}/todo_impression?mobile=true&trafficOrigin=network",
+        f"https://publisher.linkvertise.com/api/v1/redirect/link/{path}/click?trafficOrigin=network"
+    ]
+    for u in urls:
+        try:
+            requests.get(u, headers=HEADERS, timeout=8)
+        except Exception:
+            pass
 
 def bypass_linkvertise(url):
     try:
@@ -80,17 +108,38 @@ def bypass_linkvertise(url):
         resp = requests.get(static_url, headers=HEADERS, timeout=10)
         if resp.status_code != 200:
             return {"success": False, "error": f"Static request failed ({resp.status_code})", "status_code": resp.status_code, "body": resp.text[:1000]}
-        static_data = resp.json()
+        try:
+            static_data = resp.json()
+        except Exception:
+            static_data = None
         link_id = extract_link_id(static_data)
         if not link_id:
-            return {"success": False, "error": "Could not extract link id from static response", "static_excerpt": json.dumps(static_data)[:1500]}
+            stimulate_linkvertise(path)
+            try:
+                resp2 = requests.get(static_url, headers=HEADERS, timeout=10)
+                if resp2.status_code == 200:
+                    try:
+                        static_data = resp2.json()
+                    except Exception:
+                        static_data = None
+                    link_id = extract_link_id(static_data)
+            except Exception:
+                pass
+        if not link_id:
+            alternative_keys = []
+            if isinstance(static_data, dict):
+                alternative_keys = [k for k in static_data.keys() if k.lower().find("link")!=-1 or k.lower().find("id")!=-1]
+            return {"success": False, "error": "Could not extract link id from static response", "static_excerpt": json.dumps(static_data)[:1500], "alternative_keys": alternative_keys}
         payload = {"timestamp": int(time.time() * 1000), "random": "6548307", "link_id": link_id}
         serial = base64.b64encode(json.dumps(payload).encode("utf-8")).decode("utf-8")
         target_url = f"https://publisher.linkvertise.com/api/v1/redirect/link/{path}/target?serial={serial}"
         resp = requests.get(target_url, headers=HEADERS, timeout=10)
         if resp.status_code != 200:
             return {"success": False, "error": f"Target request failed ({resp.status_code})", "status_code": resp.status_code, "body": resp.text[:1000]}
-        target_data = resp.json()
+        try:
+            target_data = resp.json()
+        except Exception:
+            target_data = None
         destination = extract_target(target_data)
         if not destination:
             return {"success": False, "error": "No target found in response", "target_excerpt": json.dumps(target_data)[:1500]}
