@@ -23,6 +23,8 @@ def extract_link_id(obj):
     if not obj:
         return None
     if isinstance(obj, dict):
+        if obj.get("success") is False and "data" in obj and isinstance(obj.get("data"), (list, dict)) and obj.get("data") == []:
+            return None
         d = obj.get("data")
         if isinstance(d, dict):
             link = d.get("link")
@@ -34,6 +36,8 @@ def extract_link_id(obj):
                 return d.get("linkId")
             if "link_id" in d and isinstance(d.get("link_id"), (str, int)):
                 return d.get("link_id")
+            if "id" in d and isinstance(d.get("id"), (str, int)):
+                return d.get("id")
         if isinstance(d, list):
             for item in d:
                 if isinstance(item, dict):
@@ -66,16 +70,16 @@ def extract_target(obj):
                 first = t[0]
                 if isinstance(first, str):
                     return first
-                if isinstance(first, dict) and "target" in first and isinstance(first["target"], str):
-                    return first["target"]
-                if isinstance(first, dict) and "url" in first and isinstance(first["url"], str):
-                    return first["url"]
+                if isinstance(first, dict):
+                    if "target" in first and isinstance(first["target"], str):
+                        return first["target"]
+                    if "url" in first and isinstance(first["url"], str):
+                        return first["url"]
         if isinstance(d, list):
             for item in d:
-                if isinstance(item, dict):
-                    found = extract_target(item)
-                    if found:
-                        return found
+                found = extract_target(item)
+                if found:
+                    return found
     if isinstance(obj, list):
         for item in obj:
             found = extract_target(item)
@@ -89,14 +93,19 @@ def parse_linkid_from_html(html):
     patterns = [
         r'"linkId"\s*:\s*["\']?(\d+)["\']?',
         r'"link_id"\s*:\s*["\']?(\d+)["\']?',
+        r'"link"\s*:\s*\{\s*"id"\s*:\s*(\d+)',
         r'data-link-id\s*=\s*["\']?(\d+)["\']?',
         r'linkId\s*=\s*["\']?(\d+)["\']?',
-        r'link_id\s*=\s*["\']?(\d+)["\']?'
+        r'link_id\s*=\s*["\']?(\d+)["\']?',
+        r'publisher\.linkvertise\.com\/api\/v1\/redirect\/link\/(\d+)\/'
     ]
     for p in patterns:
-        m = re.search(p, html)
+        m = re.search(p, html, re.I)
         if m:
             return m.group(1)
+    m = re.search(r'["\'](\d{4,})["\']', html)
+    if m:
+        return m.group(1)
     return None
 
 def stimulate_linkvertise(session, path):
@@ -107,7 +116,7 @@ def stimulate_linkvertise(session, path):
     ]
     for u in urls:
         try:
-            session.get(u, headers=HEADERS, timeout=8)
+            session.get(u, timeout=8)
         except Exception:
             pass
 
@@ -146,24 +155,32 @@ def bypass_linkvertise(original_url):
                 html_linkid = None
             if html_linkid:
                 link_id = html_linkid
-            else:
-                stimulate_linkvertise(session, path)
-                try:
-                    resp2 = session.get(static_url, timeout=10)
-                    if resp2.status_code == 200:
-                        try:
-                            static_data = resp2.json()
-                        except Exception:
-                            static_data = None
-                        link_id = extract_link_id(static_data)
-                except Exception:
-                    pass
+        if not link_id:
+            numeric_from_path = path.split('/')[0] if '/' in path else path
+            if numeric_from_path and re.fullmatch(r'\d+', numeric_from_path):
+                link_id = numeric_from_path
+        if not link_id:
+            stimulate_linkvertise(session, path)
+            try:
+                resp2 = session.get(static_url, timeout=10)
+                if resp2.status_code == 200:
+                    try:
+                        static_data = resp2.json()
+                    except Exception:
+                        static_data = None
+                    link_id = extract_link_id(static_data)
+            except Exception:
+                pass
         if not link_id:
             alternative_keys = []
             if isinstance(static_data, dict):
                 alternative_keys = [k for k in static_data.keys() if k.lower().find("link")!=-1 or k.lower().find("id")!=-1 or k.lower().find("data")!=-1]
             return {"success": False, "error": "Could not extract link id from static response", "static_excerpt": json.dumps(static_data)[:1500], "alternative_keys": alternative_keys}
-        payload = {"timestamp": int(time.time() * 1000), "random": "6548307", "link_id": int(link_id) if isinstance(link_id, (str,)) and link_id.isdigit() else link_id}
+        try:
+            lid = int(link_id) if isinstance(link_id, (str,)) and link_id.isdigit() else link_id
+        except Exception:
+            lid = link_id
+        payload = {"timestamp": int(time.time() * 1000), "random": "6548307", "link_id": lid}
         serial = base64.b64encode(json.dumps(payload).encode("utf-8")).decode("utf-8")
         target_url = f"https://publisher.linkvertise.com/api/v1/redirect/link/{path}/target?serial={serial}"
         try:
